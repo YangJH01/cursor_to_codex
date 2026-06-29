@@ -41,7 +41,7 @@ HANDOFF_COMMAND_NAMES = (
     "/cursor-to-codex-resume",
     "$cursor-to-codex-resume",
 )
-EXPORT_SCHEMA_VERSION = 22
+EXPORT_SCHEMA_VERSION = 23
 DEFAULT_MODEL_CONTEXT_WINDOW = 258400
 DEFAULT_REPLAY_MAX_CHARS = 900
 DEFAULT_REPLAY_MAX_LINES = 8
@@ -56,6 +56,7 @@ EXEC_TOOL_NAMES = {"shell", "read", "grep", "glob", "webfetch"}
 PATCH_TOOL_NAMES = {"write", "strreplace", "edit", "delete"}
 REPLAY_MODES = {"split", "compact", "full"}
 TOOL_REPLAY_MODES = {"compact", "none"}
+DEFAULT_TOOL_REPLAY_MODE = "none"
 PATCH_FAILURE_MARKERS = (
     "old_string not found",
     "could not find",
@@ -1164,7 +1165,11 @@ def session_id_for(candidate: Candidate, new: bool) -> str:
     return str(uuid.uuid5(SESSION_NAMESPACE, candidate.chat_id))
 
 
-def rollout_needs_rewrite(path: Path) -> bool:
+def rollout_needs_rewrite(
+    path: Path,
+    expected_replay: str = "split",
+    expected_tool_replay: str = DEFAULT_TOOL_REPLAY_MODE,
+) -> bool:
     if not path.exists():
         return False
     saw_user_message = False
@@ -1189,9 +1194,9 @@ def rollout_needs_rewrite(path: Path) -> bool:
                     version = payload.get("cursor_to_codex_resume_version")
                     if version != EXPORT_SCHEMA_VERSION:
                         return True
-                    if payload.get("cursor_to_codex_resume_replay") != "split":
+                    if payload.get("cursor_to_codex_resume_replay") != expected_replay:
                         return True
-                    if payload.get("cursor_to_codex_resume_tool_replay", "compact") != "compact":
+                    if payload.get("cursor_to_codex_resume_tool_replay", DEFAULT_TOOL_REPLAY_MODE) != expected_tool_replay:
                         return True
                 if payload.get("metadata") is not None:
                     return True
@@ -1911,6 +1916,7 @@ def build_tool_call_events(
     turn_id: str | None,
     timestamp_ms: int,
     cwd: Path,
+    emit_tool_events: bool = False,
 ) -> tuple[list[dict[str, Any]], str]:
     tool_name = (entry.tool_name or "").casefold()
     patch, _ = patch_for_tool(entry.tool_name, entry.args, cwd)
@@ -1941,13 +1947,10 @@ def build_tool_call_events(
             "action": action,
         }
         payload.update(turn_metadata(turn_id))
-        return (
-            [
-                {"timestamp": utc_iso(timestamp_ms), "type": "event_msg", "payload": event_payload},
-                {"timestamp": utc_iso(timestamp_ms), "type": "response_item", "payload": payload},
-            ],
-            "web_search",
-        )
+        events = [{"timestamp": utc_iso(timestamp_ms), "type": "response_item", "payload": payload}]
+        if emit_tool_events:
+            events.insert(0, {"timestamp": utc_iso(timestamp_ms), "type": "event_msg", "payload": event_payload})
+        return (events, "web_search")
 
     if tool_name == "semanticsearch":
         args = semantic_search_arguments(entry.args)
@@ -2028,6 +2031,7 @@ def build_tool_result_events(
     pending_args: Any,
     pending_tool_name: str | None,
     cwd: Path,
+    emit_tool_events: bool = False,
 ) -> list[dict[str, Any]]:
     result_text = str(entry.result or "")
     if call_kind == "custom":
@@ -2047,21 +2051,7 @@ def build_tool_result_events(
                 }
             ]
         stdout = patch_tool_stdout(changes, cwd) if success else ""
-        return [
-            {
-                "timestamp": utc_iso(timestamp_ms),
-                "type": "event_msg",
-                "payload": {
-                    "type": "patch_apply_end",
-                    "call_id": call_id,
-                    "turn_id": turn_id,
-                    "stdout": stdout,
-                    "stderr": "",
-                    "success": True,
-                    "changes": changes or {},
-                    "status": "completed",
-                },
-            },
+        events = [
             {
                 "timestamp": utc_iso(timestamp_ms),
                 "type": "response_item",
@@ -2073,6 +2063,25 @@ def build_tool_result_events(
                 },
             },
         ]
+        if emit_tool_events:
+            events.insert(
+                0,
+                {
+                    "timestamp": utc_iso(timestamp_ms),
+                    "type": "event_msg",
+                    "payload": {
+                        "type": "patch_apply_end",
+                        "call_id": call_id,
+                        "turn_id": turn_id,
+                        "stdout": stdout,
+                        "stderr": "",
+                        "success": True,
+                        "changes": changes or {},
+                        "status": "completed",
+                    },
+                },
+            )
+        return events
     if call_kind == "web_search":
         context_text = web_search_result_context_text(result_text)
         if not context_text:
@@ -2117,7 +2126,7 @@ def build_events(
     created_ms: int,
     defaults: ThreadDefaults,
     replay_mode: str = "split",
-    tool_replay_mode: str = "compact",
+    tool_replay_mode: str = DEFAULT_TOOL_REPLAY_MODE,
 ) -> list[dict[str, Any]]:
     if replay_mode not in REPLAY_MODES:
         raise ValueError(f"unknown replay mode: {replay_mode}")
@@ -2326,6 +2335,7 @@ def build_events(
                 turn_id=turn_id,
                 timestamp_ms=next_ms(),
                 cwd=cwd,
+                emit_tool_events=tool_replay_mode == "compact",
             )
             events.extend(tool_events)
             if entry.tool_call_id:
@@ -2396,6 +2406,7 @@ def build_events(
                     pending_args=pending_args,
                     pending_tool_name=pending_tool_name or entry.tool_name,
                     cwd=cwd,
+                    emit_tool_events=tool_replay_mode == "compact",
                 )
             )
             input_tokens += estimate_tokens(str(entry.result or ""))
@@ -2669,7 +2680,7 @@ def import_candidate(args: argparse.Namespace) -> dict[str, Any]:
     if args.dry_run:
         return summary
 
-    needs_repair = rollout_needs_rewrite(rollout_path)
+    needs_repair = rollout_needs_rewrite(rollout_path, replay_mode, args.tool_replay)
     existing_thread_rollout = thread_rollout_path(state_db, session_id)
     already_current = rollout_path.exists() and (
         not state_db
@@ -2762,9 +2773,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--tool-replay",
         choices=sorted(TOOL_REPLAY_MODES),
-        default="compact",
+        default=DEFAULT_TOOL_REPLAY_MODE,
         help=(
-            "Tool display replay mode: compact text summaries (default) or none. "
+            "Tool display replay mode: none for Codex-resume-like display (default) "
+            "or compact text summaries. "
             "Stock Codex CLI 0.142.3 does not expose a stable no-rerun API for "
             "injecting native Ran/Edited TUI widgets into closed-session resume replay."
         ),

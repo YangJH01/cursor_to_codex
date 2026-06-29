@@ -53,11 +53,16 @@ blocks, should stay intact.
 
 Tool calls must be written as stock Codex-compatible `response_item` tool rows with
 `internal_chat_message_metadata_passthrough` so the model context keeps the
-complete tool history. For visible replay, add compact Codex-style summaries
-instead of raw full payloads: shell-like tools should show `Ran ...`, preserve
-the leading lines of multiline shell commands, include a short `└` output
-preview, and patch tools should show
-`Edited <path> (+N -M)` with a clipped diff snippet.
+complete tool history. By default, do not add visible tool replay messages; this
+keeps the imported screen closer to stock Codex resume, where closed-session
+tool history is model context rather than replayed chat text.
+
+When the user explicitly asks for visible command/edit history, rerun the
+importer with `--tool-replay compact`. In that mode, add compact Codex-style
+summaries instead of raw full payloads: shell-like tools should show `Ran ...`,
+preserve the leading lines of multiline shell commands, include a short `└`
+output preview, and patch tools should show `Edited <path> (+N -M)` with a
+clipped diff snippet.
 
 Prefer Codex-native tool shapes when there is a close stock equivalent:
 `WebSearch` becomes `web_search_call`, `TodoWrite` becomes `update_plan`,
@@ -79,7 +84,7 @@ adds raw `ResponseItem` records to model-visible history, while
 `thread/shellCommand` and `command/exec` execute commands instead of logging old
 commands. Do not patch Codex itself and do not re-run old Cursor commands or
 patches just to make a prettier replay. Keep compact tool replay as the stable
-visible surface.
+optional visible surface.
 
 For visible replay only, convert simple Markdown tables into plain aligned
 terminal tables before splitting. Keep the original Markdown table unchanged in

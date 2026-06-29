@@ -692,6 +692,7 @@ class EndToEndImportTests(unittest.TestCase):
                 and payload.get("role") == "assistant"
             ]
 
+            self.assertEqual(summary["tool_replay"], "none")
             self.assertIn("function_call", response_kinds)
             self.assertIn("function_call_output", response_kinds)
             self.assertIn("custom_tool_call", response_kinds)
@@ -699,12 +700,12 @@ class EndToEndImportTests(unittest.TestCase):
             self.assertIn("web_search_call", response_kinds)
             self.assertIn("exec_command", function_names)
             self.assertIn("update_plan", function_names)
-            self.assertIn("patch_apply_end", event_kinds)
-            self.assertIn("web_search_end", event_kinds)
+            self.assertNotIn("patch_apply_end", event_kinds)
+            self.assertNotIn("web_search_end", event_kinds)
             self.assertTrue(any("  41 | def main():" in output for output in function_outputs))
             self.assertTrue(any("app.py:41:def main():" in output for output in function_outputs))
-            self.assertTrue(any("  └   41 | def main():" in message for message in replay_messages))
-            self.assertTrue(any("  └ app.py:41:def main():" in message for message in replay_messages))
+            self.assertFalse(any("  └   41 | def main():" in message for message in replay_messages))
+            self.assertFalse(any("  └ app.py:41:def main():" in message for message in replay_messages))
             self.assertTrue(
                 any(
                     "[Cursor WebSearch result]" in content.get("text", "")

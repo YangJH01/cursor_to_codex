@@ -132,6 +132,7 @@ class FormatterTests(unittest.TestCase):
             Path("/home/yjh/bypass"),
             1_700_000_000_000,
             self.importer.ThreadDefaults(cli_version="0.142.3", model="gpt-5.5"),
+            tool_replay_mode="compact",
         )
         agent_messages = [
             event["payload"]["message"]
@@ -173,6 +174,44 @@ class FormatterTests(unittest.TestCase):
         self.assertTrue(any(output.startswith("Chunk ID: ") for output in function_outputs))
         self.assertTrue(any("Process exited with code 0" in output for output in function_outputs))
 
+    def test_build_events_default_tool_replay_hides_tool_summaries(self) -> None:
+        events = self.importer.build_events(
+            "11111111-1111-1111-1111-111111111111",
+            [
+                self.importer.ExportEntry(kind="user", text="do it"),
+                self.importer.ExportEntry(
+                    kind="tool_call",
+                    tool_name="shell",
+                    tool_call_id="shell-1",
+                    args={"command": "echo hi"},
+                ),
+                self.importer.ExportEntry(
+                    kind="tool_result",
+                    tool_call_id="shell-1",
+                    result="Output:\nhi\n",
+                ),
+            ],
+            "test",
+            Path("/home/yjh/bypass"),
+            1_700_000_000_000,
+            self.importer.ThreadDefaults(cli_version="0.142.3"),
+        )
+        agent_messages = [
+            event["payload"]["message"]
+            for event in events
+            if event.get("type") == "event_msg"
+            and event.get("payload", {}).get("type") == "agent_message"
+        ]
+        response_types = [
+            event["payload"]["type"]
+            for event in events
+            if event.get("type") == "response_item"
+        ]
+
+        self.assertFalse(any(message.startswith("Ran `echo hi`") for message in agent_messages))
+        self.assertIn("function_call", response_types)
+        self.assertIn("function_call_output", response_types)
+
     def test_cursor_todowrite_maps_to_codex_update_plan(self) -> None:
         events = self.importer.build_events(
             "11111111-1111-1111-1111-111111111111",
@@ -199,6 +238,7 @@ class FormatterTests(unittest.TestCase):
             Path("/home/yjh/bypass"),
             1_700_000_000_000,
             self.importer.ThreadDefaults(cli_version="0.142.3"),
+            tool_replay_mode="compact",
         )
 
         call = next(
@@ -241,6 +281,7 @@ class FormatterTests(unittest.TestCase):
             Path("/home/yjh/bypass"),
             1_700_000_000_000,
             self.importer.ThreadDefaults(cli_version="0.142.3"),
+            tool_replay_mode="compact",
         )
 
         call = next(
@@ -301,6 +342,7 @@ class FormatterTests(unittest.TestCase):
                 repo,
                 1_700_000_000_000,
                 self.importer.ThreadDefaults(cli_version="0.142.3"),
+                tool_replay_mode="compact",
             )
 
             call = next(
@@ -344,6 +386,7 @@ class FormatterTests(unittest.TestCase):
             Path("/home/yjh/bypass"),
             1_700_000_000_000,
             self.importer.ThreadDefaults(cli_version="0.142.3"),
+            tool_replay_mode="compact",
         )
 
         web_call = next(
@@ -384,6 +427,7 @@ class FormatterTests(unittest.TestCase):
             Path("/home/yjh/bypass"),
             1_700_000_000_000,
             self.importer.ThreadDefaults(cli_version="0.142.3"),
+            tool_replay_mode="compact",
         )
 
         response_messages = [
@@ -442,6 +486,7 @@ class FormatterTests(unittest.TestCase):
             Path("/home/yjh/bypass"),
             1_700_000_000_000,
             self.importer.ThreadDefaults(cli_version="0.142.3"),
+            tool_replay_mode="compact",
         )
 
         calls = [
@@ -499,6 +544,7 @@ class FormatterTests(unittest.TestCase):
             Path("/home/yjh/bypass"),
             1_700_000_000_000,
             self.importer.ThreadDefaults(cli_version="0.142.3"),
+            tool_replay_mode="compact",
         )
 
         calls = [
@@ -553,6 +599,7 @@ class FormatterTests(unittest.TestCase):
             Path("/home/yjh/bypass"),
             1_700_000_000_000,
             self.importer.ThreadDefaults(cli_version="0.142.3"),
+            tool_replay_mode="compact",
         )
 
         patch_ends = [
