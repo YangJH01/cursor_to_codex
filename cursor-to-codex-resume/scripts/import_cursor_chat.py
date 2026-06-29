@@ -2701,6 +2701,21 @@ def import_candidate(args: argparse.Namespace) -> dict[str, Any]:
         tokens_used,
     )
     summary["session_index_updated"] = update_session_index(codex_home, session_id, title, updated_ms)
+    if state_db and state_db.exists() and not summary["state_updated"]:
+        summary["status"] = "registration-failed"
+        summary["error"] = (
+            f"Failed to update Codex state database {state_db}. "
+            "The rollout file was written, but Codex resume may not list this session. "
+            "Fix the state database compatibility issue and rerun the importer."
+        )
+        return summary
+    if (not state_db or not state_db.exists()) and not summary["session_index_updated"]:
+        summary["status"] = "registration-failed"
+        summary["error"] = (
+            "Failed to update Codex session_index.jsonl and no Codex state database was available. "
+            "The rollout file was written, but Codex resume may not list this session."
+        )
+        return summary
     summary["status"] = "repaired" if needs_repair else "imported"
     return summary
 
@@ -2767,9 +2782,9 @@ def main(argv: list[str] | None = None) -> int:
 
     summary = import_candidate(args)
     print(json.dumps(summary, ensure_ascii=False, indent=2))
-    if summary.get("status") == "imported":
+    if summary.get("status") in {"imported", "repaired"}:
         print("\nRun: codex resume --all")
-    return 0
+    return 1 if summary.get("status") == "registration-failed" else 0
 
 
 if __name__ == "__main__":

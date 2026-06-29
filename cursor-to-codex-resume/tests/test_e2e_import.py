@@ -67,6 +67,24 @@ def create_codex_state_db(codex_home: Path) -> Path:
     return state_db
 
 
+def create_incompatible_codex_state_db(codex_home: Path) -> Path:
+    codex_home.mkdir(parents=True, exist_ok=True)
+    state_db = codex_home / "state_5.sqlite"
+    con = sqlite3.connect(state_db)
+    con.execute(
+        """
+        CREATE TABLE threads (
+            id TEXT PRIMARY KEY,
+            rollout_path TEXT NOT NULL,
+            required_col TEXT NOT NULL
+        )
+        """
+    )
+    con.commit()
+    con.close()
+    return state_db
+
+
 class EndToEndImportTests(unittest.TestCase):
     def test_transcript_import_writes_resume_surfaces_without_user_home_writes(self) -> None:
         with tempfile.TemporaryDirectory(prefix="c2c-e2e-") as tmp:
@@ -196,6 +214,56 @@ class EndToEndImportTests(unittest.TestCase):
             self.assertEqual(row[6], 0)
             self.assertEqual(row[7], "user")
             self.assertIn("Please summarize this table.", row[8])
+
+    def test_state_db_registration_failure_returns_nonzero(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="c2c-bad-db-e2e-") as tmp:
+            root = Path(tmp)
+            cursor_home = root / "cursor"
+            codex_home = root / "codex"
+            cwd = root / "repo"
+            chat_id = "cccccccc-dddd-eeee-ffff-111111111111"
+            transcript = (
+                cursor_home
+                / "projects"
+                / "tmp-c2c-bad-db-repo"
+                / "agent-transcripts"
+                / chat_id
+                / f"{chat_id}.jsonl"
+            )
+            cwd.mkdir(parents=True)
+            transcript.parent.mkdir(parents=True)
+            state_db = create_incompatible_codex_state_db(codex_home)
+            transcript.write_text(
+                json.dumps({"role": "user", "message": {"content": "Carry this over."}}) + "\n",
+                encoding="utf-8",
+            )
+
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    str(IMPORTER),
+                    "--cursor-home",
+                    str(cursor_home),
+                    "--codex-home",
+                    str(codex_home),
+                    "--chat",
+                    chat_id,
+                    "--cwd",
+                    str(cwd),
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertNotEqual(proc.returncode, 0)
+            summary = parse_summary(proc.stdout)
+            self.assertEqual(summary["status"], "registration-failed")
+            self.assertFalse(summary["state_updated"])
+            self.assertEqual(summary["state_db"], str(state_db))
+            self.assertIn("Failed to update Codex state database", summary["error"])
+            self.assertIn("warning: failed to update", proc.stderr)
+            self.assertNotIn("Run: codex resume", proc.stdout)
 
     def test_empty_selected_transcript_refuses_without_writing_session(self) -> None:
         with tempfile.TemporaryDirectory(prefix="c2c-empty-e2e-") as tmp:
