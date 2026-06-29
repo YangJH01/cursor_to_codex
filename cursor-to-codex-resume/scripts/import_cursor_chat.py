@@ -615,12 +615,18 @@ def cursor_project_key_for_path(path: Path) -> str:
 
 
 def cursor_project_keys_for_cwd(cwd: Path) -> set[str]:
+    return set(cursor_project_key_chain_for_cwd(cwd))
+
+
+def cursor_project_key_chain_for_cwd(cwd: Path) -> list[str]:
     resolved = maybe_resolve(cwd)
-    keys = set()
+    keys = []
+    seen = set()
     for path in (resolved, *resolved.parents):
         key = cursor_project_key_for_path(path)
-        if key:
-            keys.add(key)
+        if key and key not in seen:
+            keys.append(key)
+            seen.add(key)
     return keys
 
 
@@ -689,14 +695,19 @@ def select_current_candidate(
         if len(matches) == 1:
             return matches[0], f"env:{key}"
 
-    current_project_keys = cursor_project_keys_for_cwd(cwd)
+    current_project_keys = cursor_project_key_chain_for_cwd(cwd)
+    project_key_rank = {key: index for index, key in enumerate(current_project_keys)}
     project_matches = [
         candidate
         for candidate in usable
-        if candidate.project_key and candidate.project_key in current_project_keys
+        if candidate.project_key and candidate.project_key in project_key_rank
     ]
     if project_matches:
-        return sorted(project_matches, key=lambda c: c.updated_ms or 0, reverse=True)[0], "current-project"
+        selected = sorted(
+            project_matches,
+            key=lambda c: (project_key_rank[str(c.project_key)], -(c.updated_ms or 0)),
+        )[0]
+        return selected, "current-project"
 
     path_matches = []
     for candidate in usable:

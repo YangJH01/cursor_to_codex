@@ -463,6 +463,53 @@ class FormatterTests(unittest.TestCase):
         self.assertFalse(any(message.startswith("Edited `lib.py`") for message in agent_messages))
         self.assertTrue(any("old_string not found" in output for output in outputs))
 
+    def test_current_project_selection_prefers_exact_cwd_over_newer_parent(self) -> None:
+        child_key = self.importer.cursor_project_key_for_path(Path("/tmp/c2c-selection/child"))
+        parent_key = self.importer.cursor_project_key_for_path(Path("/tmp/c2c-selection"))
+        selected, selected_by = self.importer.select_current_candidate(
+            [
+                self.importer.Candidate(
+                    chat_id="parent",
+                    updated_ms=2_000,
+                    transcript_path=Path("/tmp/parent.jsonl"),
+                    project_key=parent_key,
+                ),
+                self.importer.Candidate(
+                    chat_id="child",
+                    updated_ms=1_000,
+                    transcript_path=Path("/tmp/child.jsonl"),
+                    project_key=child_key,
+                ),
+            ],
+            Path("/tmp/c2c-selection/child"),
+        )
+
+        self.assertEqual(selected.chat_id, "child")
+        self.assertEqual(selected_by, "current-project")
+
+    def test_current_project_selection_falls_back_to_nearest_parent(self) -> None:
+        root_key = self.importer.cursor_project_key_for_path(Path("/tmp"))
+        parent_key = self.importer.cursor_project_key_for_path(Path("/tmp/c2c-selection"))
+        selected, _ = self.importer.select_current_candidate(
+            [
+                self.importer.Candidate(
+                    chat_id="root",
+                    updated_ms=3_000,
+                    transcript_path=Path("/tmp/root.jsonl"),
+                    project_key=root_key,
+                ),
+                self.importer.Candidate(
+                    chat_id="parent",
+                    updated_ms=1_000,
+                    transcript_path=Path("/tmp/parent.jsonl"),
+                    project_key=parent_key,
+                ),
+            ],
+            Path("/tmp/c2c-selection/child"),
+        )
+
+        self.assertEqual(selected.chat_id, "parent")
+
 
 if __name__ == "__main__":
     unittest.main()
