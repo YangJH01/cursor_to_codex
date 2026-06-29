@@ -1,4 +1,4 @@
 interface:
   display_name: "Cursor to Codex Resume"
   short_description: "Export current Cursor session to Codex resume"
-  default_prompt: "Use $cursor-to-codex-resume to export this current Cursor CLI session into Codex resume."
+  default_prompt: "Use $cursor-to-codex-resume to export this current Cursor CLI session into Codex resume. If I ask for a more detailed restore, include visible command/edit history."

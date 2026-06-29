@@ -15,6 +15,19 @@ Run:
 python ~/.cursor/skills/cursor-to-codex-resume/scripts/import_cursor_chat.py
 ```
 
+If the user's invocation asks for a more detailed restore, run this instead:
+
+```sh
+python ~/.cursor/skills/cursor-to-codex-resume/scripts/import_cursor_chat.py --tool-replay compact
+```
+
+Treat phrases such as "좀 더 디테일하게 복구", "자세히 복구",
+"명령어/수정 내역도 보이게", "작업 로그도 보이게", "Ran/Edited도 보이게",
+"detailed restore", or "include command/edit history" as requests for the
+detailed restore mode. Do not ask a follow-up question for these phrases.
+Do not use `--full-replay` for this; reserve `--full-replay` only for raw
+debugging of Codex resume rendering.
+
 The importer is also available as an independent executable,
 `cursor-to-codex-resume`, when installed into the user's PATH. That wrapper is
 only a convenience around the same importer; it must not patch Codex itself.
@@ -57,12 +70,12 @@ complete tool history. By default, do not add visible tool replay messages; this
 keeps the imported screen closer to stock Codex resume, where closed-session
 tool history is model context rather than replayed chat text.
 
-When the user explicitly asks for visible command/edit history, rerun the
-importer with `--tool-replay compact`. In that mode, add compact Codex-style
-summaries instead of raw full payloads: shell-like tools should show `Ran ...`,
-preserve the leading lines of multiline shell commands, include a short `└`
-output preview, and patch tools should show `Edited <path> (+N -M)` with a
-clipped diff snippet.
+When the user explicitly asks for visible command/edit history or uses a
+"more detailed restore" phrase listed above, use `--tool-replay compact`. In
+that mode, add compact Codex-style summaries instead of raw full payloads:
+shell-like tools should show `Ran ...`, preserve the leading lines of multiline
+shell commands, include a short `└` output preview, and patch tools should show
+`Edited <path> (+N -M)` with a clipped diff snippet.
 
 Prefer Codex-native tool shapes when there is a close stock equivalent:
 `WebSearch` becomes `web_search_call`, `TodoWrite` becomes `update_plan`,
