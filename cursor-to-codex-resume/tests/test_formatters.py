@@ -259,6 +259,210 @@ class FormatterTests(unittest.TestCase):
         self.assertTrue(patch_end["success"])
         self.assertEqual(patch_end["changes"]["/home/yjh/bypass/old.txt"]["type"], "delete")
 
+    def test_cursor_websearch_maps_to_native_web_search_call(self) -> None:
+        events = self.importer.build_events(
+            "11111111-1111-1111-1111-111111111111",
+            [
+                self.importer.ExportEntry(kind="user", text="look it up"),
+                self.importer.ExportEntry(
+                    kind="tool_call",
+                    tool_name="WebSearch",
+                    tool_call_id="web-1",
+                    args={"search_term": "Codex CLI resume format"},
+                ),
+                self.importer.ExportEntry(kind="assistant", text="found it"),
+            ],
+            "test",
+            Path("/home/yjh/bypass"),
+            1_700_000_000_000,
+            self.importer.ThreadDefaults(cli_version="0.142.3"),
+        )
+
+        web_call = next(
+            event["payload"]
+            for event in events
+            if event.get("type") == "response_item"
+            and event.get("payload", {}).get("type") == "web_search_call"
+        )
+        web_end = next(
+            event["payload"]
+            for event in events
+            if event.get("type") == "event_msg"
+            and event.get("payload", {}).get("type") == "web_search_end"
+        )
+
+        self.assertEqual(web_call["action"]["type"], "search")
+        self.assertEqual(web_call["action"]["query"], "Codex CLI resume format")
+        self.assertEqual(web_end["query"], "Codex CLI resume format")
+
+    def test_cursor_await_readlints_and_semantic_search_map_to_codex_context(self) -> None:
+        events = self.importer.build_events(
+            "11111111-1111-1111-1111-111111111111",
+            [
+                self.importer.ExportEntry(kind="user", text="check it"),
+                self.importer.ExportEntry(
+                    kind="tool_call",
+                    tool_name="Await",
+                    tool_call_id="await-1",
+                    args={"task_id": "123", "block_until_ms": 60000},
+                ),
+                self.importer.ExportEntry(kind="tool_result", tool_call_id="await-1", result="done"),
+                self.importer.ExportEntry(
+                    kind="tool_call",
+                    tool_name="ReadLints",
+                    tool_call_id="lint-1",
+                    args={"paths": ["/home/yjh/bypass/app.ts"]},
+                ),
+                self.importer.ExportEntry(kind="tool_result", tool_call_id="lint-1", result="No diagnostics"),
+                self.importer.ExportEntry(
+                    kind="tool_call",
+                    tool_name="SemanticSearch",
+                    tool_call_id="semantic-1",
+                    args={"query": "session resume storage", "num_results": 5},
+                ),
+                self.importer.ExportEntry(kind="tool_result", tool_call_id="semantic-1", result="lib.py:42 match"),
+            ],
+            "test",
+            Path("/home/yjh/bypass"),
+            1_700_000_000_000,
+            self.importer.ThreadDefaults(cli_version="0.142.3"),
+        )
+
+        calls = [
+            event["payload"]
+            for event in events
+            if event.get("type") == "response_item"
+            and event.get("payload", {}).get("type") == "function_call"
+        ]
+        by_name = {call["name"]: self.importer.json.loads(call["arguments"]) for call in calls}
+        agent_messages = [
+            event["payload"]["message"]
+            for event in events
+            if event.get("type") == "event_msg"
+            and event.get("payload", {}).get("type") == "agent_message"
+        ]
+
+        self.assertEqual(by_name["wait"]["ids"], ["123"])
+        self.assertEqual(by_name["wait"]["timeout_ms"], 60000)
+        self.assertEqual(by_name["mcp__omx_code_intel__lsp_diagnostics"]["file"], "/home/yjh/bypass/app.ts")
+        self.assertEqual(by_name["semantic_search"]["query"], "session resume storage")
+        self.assertEqual(by_name["semantic_search"]["limit"], 5)
+        self.assertTrue(any(message.startswith("Waited for `123`") for message in agent_messages))
+        self.assertTrue(any(message.startswith("Read diagnostics for `/home/yjh/bypass/app.ts`") for message in agent_messages))
+        self.assertTrue(any(message.startswith("Semantic searched `session resume storage`") for message in agent_messages))
+
+    def test_read_and_grep_preserve_cursor_output_prefixes_in_codex_context(self) -> None:
+        events = self.importer.build_events(
+            "11111111-1111-1111-1111-111111111111",
+            [
+                self.importer.ExportEntry(kind="user", text="inspect it"),
+                self.importer.ExportEntry(
+                    kind="tool_call",
+                    tool_name="Read",
+                    tool_call_id="read-1",
+                    args={"path": "/home/yjh/bypass/app.py", "offset": 40, "limit": 2},
+                ),
+                self.importer.ExportEntry(
+                    kind="tool_result",
+                    tool_call_id="read-1",
+                    result="Exit code: 0\nOutput:\n  41 | def main():\n  42 |     return 1\n",
+                ),
+                self.importer.ExportEntry(
+                    kind="tool_call",
+                    tool_name="Grep",
+                    tool_call_id="grep-1",
+                    args={"pattern": "main", "path": "/home/yjh/bypass"},
+                ),
+                self.importer.ExportEntry(
+                    kind="tool_result",
+                    tool_call_id="grep-1",
+                    result="Exit code: 0\nOutput:\napp.py:41:def main():\n",
+                ),
+            ],
+            "test",
+            Path("/home/yjh/bypass"),
+            1_700_000_000_000,
+            self.importer.ThreadDefaults(cli_version="0.142.3"),
+        )
+
+        calls = [
+            event["payload"]
+            for event in events
+            if event.get("type") == "response_item"
+            and event.get("payload", {}).get("type") == "function_call"
+        ]
+        outputs = [
+            event["payload"]["output"]
+            for event in events
+            if event.get("type") == "response_item"
+            and event.get("payload", {}).get("type") == "function_call_output"
+        ]
+        agent_messages = [
+            event["payload"]["message"]
+            for event in events
+            if event.get("type") == "event_msg"
+            and event.get("payload", {}).get("type") == "agent_message"
+        ]
+
+        commands = [self.importer.json.loads(call["arguments"])["cmd"] for call in calls]
+        self.assertTrue(any(command.startswith("sed -n 41,42p") for command in commands))
+        self.assertTrue(any(command.startswith("rg -n main") for command in commands))
+        self.assertTrue(any("  41 | def main():" in output for output in outputs))
+        self.assertTrue(any("app.py:41:def main():" in output for output in outputs))
+        self.assertTrue(any("  └   41 | def main():" in message for message in agent_messages))
+        self.assertTrue(any("  └ app.py:41:def main():" in message for message in agent_messages))
+
+    def test_failed_patch_does_not_emit_successful_patch_apply_end_or_edited_replay(self) -> None:
+        events = self.importer.build_events(
+            "11111111-1111-1111-1111-111111111111",
+            [
+                self.importer.ExportEntry(kind="user", text="edit it"),
+                self.importer.ExportEntry(
+                    kind="tool_call",
+                    tool_name="StrReplace",
+                    tool_call_id="edit-1",
+                    args={
+                        "path": "/home/yjh/bypass/lib.py",
+                        "old_string": "missing",
+                        "new_string": "replacement",
+                    },
+                ),
+                self.importer.ExportEntry(
+                    kind="tool_result",
+                    tool_call_id="edit-1",
+                    result="Exit code: 1\nOutput:\nold_string not found\n",
+                ),
+            ],
+            "test",
+            Path("/home/yjh/bypass"),
+            1_700_000_000_000,
+            self.importer.ThreadDefaults(cli_version="0.142.3"),
+        )
+
+        patch_ends = [
+            event
+            for event in events
+            if event.get("type") == "event_msg"
+            and event.get("payload", {}).get("type") == "patch_apply_end"
+        ]
+        agent_messages = [
+            event["payload"]["message"]
+            for event in events
+            if event.get("type") == "event_msg"
+            and event.get("payload", {}).get("type") == "agent_message"
+        ]
+        outputs = [
+            event["payload"]["output"]
+            for event in events
+            if event.get("type") == "response_item"
+            and event.get("payload", {}).get("type") == "custom_tool_call_output"
+        ]
+
+        self.assertEqual(patch_ends, [])
+        self.assertTrue(any(message.startswith("Patch failed") for message in agent_messages))
+        self.assertFalse(any(message.startswith("Edited `lib.py`") for message in agent_messages))
+        self.assertTrue(any("old_string not found" in output for output in outputs))
+
 
 if __name__ == "__main__":
     unittest.main()

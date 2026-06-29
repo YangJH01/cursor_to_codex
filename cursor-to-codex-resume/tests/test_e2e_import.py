@@ -247,6 +247,222 @@ class EndToEndImportTests(unittest.TestCase):
             self.assertFalse((codex_home / "sessions").exists())
             self.assertFalse((codex_home / "session_index.jsonl").exists())
 
+    def test_transcript_fallback_writes_model_visible_tool_history(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="c2c-tools-e2e-") as tmp:
+            root = Path(tmp)
+            cursor_home = root / "cursor"
+            codex_home = root / "codex"
+            cwd = root / "repo"
+            chat_id = "bbbbbbbb-cccc-dddd-eeee-ffffffffffff"
+            transcript = (
+                cursor_home
+                / "projects"
+                / "tmp-c2c-tools-repo"
+                / "agent-transcripts"
+                / chat_id
+                / f"{chat_id}.jsonl"
+            )
+            cwd.mkdir(parents=True)
+            transcript.parent.mkdir(parents=True)
+            create_codex_state_db(codex_home)
+            transcript.write_text(
+                "\n".join(
+                    [
+                        json.dumps(
+                            {
+                                "role": "user",
+                                "message": {"content": [{"type": "text", "text": "Check the repo."}]},
+                            },
+                            ensure_ascii=False,
+                        ),
+                        json.dumps(
+                            {
+                                "role": "assistant",
+                                "message": {
+                                    "content": [
+                                        {"type": "text", "text": "I will inspect it.\n\n[REDACTED]"},
+                                        {
+                                            "type": "tool_use",
+                                            "id": "shell-1",
+                                            "name": "Shell",
+                                            "input": {"command": "pwd"},
+                                        },
+                                        {
+                                            "type": "tool_use",
+                                            "id": "read-1",
+                                            "name": "Read",
+                                            "input": {"path": str(cwd / "app.py"), "offset": 40, "limit": 2},
+                                        },
+                                        {
+                                            "type": "tool_use",
+                                            "id": "grep-1",
+                                            "name": "Grep",
+                                            "input": {"pattern": "main", "path": str(cwd)},
+                                        },
+                                        {
+                                            "type": "tool_use",
+                                            "id": "write-1",
+                                            "name": "Write",
+                                            "input": {"path": str(cwd / "hello.txt"), "contents": "hello\n"},
+                                        },
+                                        {
+                                            "type": "tool_use",
+                                            "id": "web-1",
+                                            "name": "WebSearch",
+                                            "input": {"search_term": "Codex CLI resume"},
+                                        },
+                                        {
+                                            "type": "tool_use",
+                                            "id": "todo-1",
+                                            "name": "TodoWrite",
+                                            "input": {"todos": [{"content": "Inspect", "status": "in_progress"}]},
+                                        },
+                                    ]
+                                },
+                            },
+                            ensure_ascii=False,
+                        ),
+                        json.dumps(
+                            {
+                                "role": "tool",
+                                "id": "shell-1",
+                                "message": {
+                                    "content": [
+                                        {
+                                            "type": "tool_result",
+                                            "id": "shell-1",
+                                            "result": "Exit code: 0\nOutput:\n/tmp/c2c-tools-repo\n",
+                                        }
+                                    ]
+                                },
+                            },
+                            ensure_ascii=False,
+                        ),
+                        json.dumps(
+                            {
+                                "role": "tool",
+                                "id": "read-1",
+                                "message": {
+                                    "content": [
+                                        {
+                                            "type": "tool_result",
+                                            "id": "read-1",
+                                            "result": "Exit code: 0\nOutput:\n  41 | def main():\n  42 |     return 1\n",
+                                        }
+                                    ]
+                                },
+                            },
+                            ensure_ascii=False,
+                        ),
+                        json.dumps(
+                            {
+                                "role": "tool",
+                                "id": "grep-1",
+                                "message": {
+                                    "content": [
+                                        {
+                                            "type": "tool_result",
+                                            "id": "grep-1",
+                                            "result": "Exit code: 0\nOutput:\napp.py:41:def main():\n",
+                                        }
+                                    ]
+                                },
+                            },
+                            ensure_ascii=False,
+                        ),
+                        json.dumps(
+                            {
+                                "role": "tool",
+                                "id": "write-1",
+                                "message": {
+                                    "content": [{"type": "tool_result", "id": "write-1", "result": "ok"}]
+                                },
+                            },
+                            ensure_ascii=False,
+                        ),
+                        json.dumps(
+                            {
+                                "role": "tool",
+                                "id": "todo-1",
+                                "message": {
+                                    "content": [{"type": "tool_result", "id": "todo-1", "result": "ok"}]
+                                },
+                            },
+                            ensure_ascii=False,
+                        ),
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    str(IMPORTER),
+                    "--cursor-home",
+                    str(cursor_home),
+                    "--codex-home",
+                    str(codex_home),
+                    "--chat",
+                    chat_id,
+                    "--cwd",
+                    str(cwd),
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            summary = parse_summary(proc.stdout)
+            events = [
+                json.loads(line)
+                for line in Path(summary["rollout_path"]).read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            response_payloads = [
+                event.get("payload", {})
+                for event in events
+                if event.get("type") == "response_item"
+            ]
+            response_kinds = [payload.get("type") for payload in response_payloads]
+            function_names = [
+                payload.get("name")
+                for payload in response_payloads
+                if payload.get("type") == "function_call"
+            ]
+            event_kinds = [
+                event.get("payload", {}).get("type")
+                for event in events
+                if event.get("type") == "event_msg"
+            ]
+            function_outputs = [
+                payload.get("output", "")
+                for payload in response_payloads
+                if payload.get("type") == "function_call_output"
+            ]
+            replay_messages = [
+                event.get("payload", {}).get("message", "")
+                for event in events
+                if event.get("type") == "event_msg"
+                and event.get("payload", {}).get("type") == "agent_message"
+            ]
+
+            self.assertIn("function_call", response_kinds)
+            self.assertIn("function_call_output", response_kinds)
+            self.assertIn("custom_tool_call", response_kinds)
+            self.assertIn("custom_tool_call_output", response_kinds)
+            self.assertIn("web_search_call", response_kinds)
+            self.assertIn("exec_command", function_names)
+            self.assertIn("update_plan", function_names)
+            self.assertIn("patch_apply_end", event_kinds)
+            self.assertIn("web_search_end", event_kinds)
+            self.assertTrue(any("  41 | def main():" in output for output in function_outputs))
+            self.assertTrue(any("app.py:41:def main():" in output for output in function_outputs))
+            self.assertTrue(any("  └   41 | def main():" in message for message in replay_messages))
+            self.assertTrue(any("  └ app.py:41:def main():" in message for message in replay_messages))
+
 
 if __name__ == "__main__":
     unittest.main()

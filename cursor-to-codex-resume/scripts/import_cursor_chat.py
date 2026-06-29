@@ -41,7 +41,7 @@ HANDOFF_COMMAND_NAMES = (
     "/cursor-to-codex-resume",
     "$cursor-to-codex-resume",
 )
-EXPORT_SCHEMA_VERSION = 21
+EXPORT_SCHEMA_VERSION = 22
 DEFAULT_MODEL_CONTEXT_WINDOW = 258400
 DEFAULT_REPLAY_MAX_CHARS = 900
 DEFAULT_REPLAY_MAX_LINES = 8
@@ -915,12 +915,62 @@ def extract_entries_from_transcript(path: Path, include_tools: bool) -> list[Exp
             except json.JSONDecodeError:
                 continue
             role = item.get("role")
-            if role not in {"user", "assistant"}:
+            if role not in {"user", "assistant", "tool"}:
                 continue
             message = item.get("message") or {}
-            text = text_from_content(message.get("content"), include_tools)
-            if text:
-                entries.append(ExportEntry(kind=role, text=text, phase="final_answer" if role == "assistant" else None))
+            if role == "tool":
+                if not include_tools:
+                    continue
+                for part in iter_content_parts(message.get("content")):
+                    if part.get("type") not in {"tool-result", "tool_result"}:
+                        continue
+                    entries.append(
+                        ExportEntry(
+                            kind="tool_result",
+                            tool_name=part.get("toolName") or part.get("name"),
+                            tool_call_id=part.get("toolCallId") or part.get("id") or item.get("id"),
+                            result=extract_tool_result_text(part),
+                        )
+                    )
+                continue
+            if role == "user":
+                text = text_from_content(message.get("content"), include_tools=False)
+                if text:
+                    entries.append(ExportEntry(kind="user", text=text))
+                continue
+
+            parts = list(iter_content_parts(message.get("content")))
+            has_tool_call = any(part.get("type") in {"tool-call", "tool_use"} for part in parts)
+            for part in parts:
+                part_type = part.get("type")
+                if part_type == "text" and isinstance(part.get("text"), str):
+                    text = normalize_export_text("assistant", part["text"])
+                    if text:
+                        entries.append(
+                            ExportEntry(
+                                kind="assistant",
+                                text=text,
+                                phase="commentary" if has_tool_call else "final_answer",
+                            )
+                        )
+                elif include_tools and part_type in {"tool-call", "tool_use"}:
+                    entries.append(
+                        ExportEntry(
+                            kind="tool_call",
+                            tool_name=part.get("toolName") or part.get("name"),
+                            tool_call_id=part.get("toolCallId") or part.get("id"),
+                            args=part.get("args") if "args" in part else part.get("input"),
+                        )
+                    )
+                elif include_tools and part_type in {"tool-result", "tool_result"}:
+                    entries.append(
+                        ExportEntry(
+                            kind="tool_result",
+                            tool_name=part.get("toolName") or part.get("name"),
+                            tool_call_id=part.get("toolCallId") or part.get("id") or item.get("id"),
+                            result=extract_tool_result_text(part),
+                        )
+                    )
     return entries
 
 
@@ -1261,6 +1311,77 @@ def exec_command_arguments(tool_name: str | None, args: Any, cwd: Path) -> dict[
     }
 
 
+def web_search_action(args: Any) -> dict[str, Any] | None:
+    if not isinstance(args, dict):
+        return None
+    url = args.get("url")
+    if isinstance(url, str) and url.strip():
+        return {"type": "open_page", "url": url.strip()}
+    query = args.get("query") or args.get("search_term") or args.get("searchTerm")
+    if not isinstance(query, str) or not query.strip():
+        return None
+    query = query.strip()
+    queries = args.get("queries")
+    if not isinstance(queries, list) or not all(isinstance(item, str) for item in queries):
+        queries = [query]
+    return {"type": "search", "query": query, "queries": queries}
+
+
+def semantic_search_arguments(args: Any) -> dict[str, Any] | None:
+    if not isinstance(args, dict):
+        return None
+    query = args.get("query") or args.get("search_term") or args.get("searchTerm")
+    if not isinstance(query, str) or not query.strip():
+        return None
+    payload: dict[str, Any] = {"query": query.strip()}
+    limit = args.get("num_results") or args.get("limit") or args.get("top_k")
+    if isinstance(limit, int) and limit > 0:
+        payload["limit"] = limit
+    directories = args.get("target_directories") or args.get("targetDirectories")
+    if isinstance(directories, list) and all(isinstance(item, str) for item in directories):
+        payload["target_directories"] = directories
+    return payload
+
+
+def read_lints_arguments(args: Any) -> dict[str, Any] | None:
+    if not isinstance(args, dict):
+        return None
+    paths = args.get("paths")
+    if isinstance(paths, list):
+        normalized = [path for path in paths if isinstance(path, str) and path.strip()]
+        if len(normalized) == 1:
+            return {"file": normalized[0]}
+        if normalized:
+            return {"paths": normalized}
+    path = args.get("path") or args.get("file")
+    if isinstance(path, str) and path.strip():
+        return {"file": path.strip()}
+    return None
+
+
+def wait_arguments(args: Any) -> dict[str, Any] | None:
+    if not isinstance(args, dict):
+        return None
+    raw_id = args.get("task_id") or args.get("taskId") or args.get("id")
+    ids = args.get("ids")
+    if isinstance(ids, list):
+        normalized_ids = [str(item) for item in ids if str(item).strip()]
+    elif raw_id is not None and str(raw_id).strip():
+        normalized_ids = [str(raw_id).strip()]
+    else:
+        normalized_ids = []
+    timeout = args.get("timeout_ms") or args.get("block_until_ms") or args.get("blockUntilMs")
+    payload: dict[str, Any] = {"ids": normalized_ids}
+    if isinstance(timeout, int) and timeout > 0:
+        payload["timeout_ms"] = timeout
+    else:
+        payload["timeout_ms"] = 30000
+    pattern = args.get("pattern")
+    if isinstance(pattern, str) and pattern.strip():
+        payload["pattern"] = pattern.strip()
+    return payload
+
+
 def normalize_function_name(tool_name: str | None) -> str:
     raw = (tool_name or "tool").strip()
     name = re.sub(r"[^0-9A-Za-z_]+", "_", raw)
@@ -1429,13 +1550,15 @@ def clean_tool_output_lines(result_text: str) -> list[str]:
 
 
 def extract_output_body(result_text: str) -> str:
-    text = result_text.replace("\r\n", "\n").replace("\r", "\n").strip()
-    if not text:
+    text = result_text.replace("\r\n", "\n").replace("\r", "\n")
+    if not text.strip():
         return ""
     for marker in ("\nOutput:\n", "\nCommand output:\n", "Output:\n", "Command output:\n"):
         if marker in text:
-            text = text.split(marker, 1)[1].strip()
+            text = text.split(marker, 1)[1].lstrip("\n").rstrip("\n")
             break
+    else:
+        text = text.strip("\n")
     lines = []
     in_fence = False
     for raw in text.splitlines():
@@ -1449,7 +1572,11 @@ def extract_output_body(result_text: str) -> str:
         ):
             continue
         lines.append(raw.rstrip())
-    return "\n".join(lines).strip() + ("\n" if lines else "")
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    while lines and not lines[-1].strip():
+        lines.pop()
+    return "\n".join(lines) + ("\n" if lines else "")
 
 
 def parse_exit_code(result_text: str, default: int = 0) -> int:
@@ -1559,6 +1686,60 @@ def patch_replay_message(changes: dict[str, Any] | None, cwd: Path) -> str | Non
     return "\n\n".join(messages) if messages else None
 
 
+def patch_failure_replay_message(result_text: str) -> str | None:
+    preview = output_preview(result_text)
+    if not preview:
+        return "Patch failed"
+    return "Patch failed\n" + preview
+
+
+def web_search_replay_message(args: Any) -> str | None:
+    action = web_search_action(args)
+    if not action:
+        return None
+    if action.get("type") == "open_page":
+        url = action.get("url")
+        return f"Opened web page `{shorten_one_line(str(url or ''))}`"
+    query = action.get("query")
+    return f"Searched web for `{shorten_one_line(str(query or ''))}`"
+
+
+def wait_replay_message(args: Any, result_text: str) -> str | None:
+    wait_args = wait_arguments(args)
+    if not wait_args:
+        return None
+    ids = wait_args.get("ids") or []
+    target = ", ".join(str(item) for item in ids) if ids else "task"
+    message = f"Waited for `{shorten_one_line(target)}`"
+    preview = output_preview(result_text)
+    if preview:
+        message += "\n" + preview
+    return message
+
+
+def diagnostic_replay_message(args: Any, result_text: str) -> str | None:
+    lint_args = read_lints_arguments(args)
+    if not lint_args:
+        return None
+    path = lint_args.get("file") or ", ".join(lint_args.get("paths", []))
+    message = f"Read diagnostics for `{shorten_one_line(str(path))}`"
+    preview = output_preview(result_text)
+    if preview:
+        message += "\n" + preview
+    return message
+
+
+def semantic_search_replay_message(args: Any, result_text: str) -> str | None:
+    search_args = semantic_search_arguments(args)
+    if not search_args:
+        return None
+    message = f"Semantic searched `{shorten_one_line(str(search_args['query']))}`"
+    preview = output_preview(result_text)
+    if preview:
+        message += "\n" + preview
+    return message
+
+
 def command_replay_message(tool_name: str | None, args: Any, result_text: str, cwd: Path) -> str | None:
     cmd = shell_cmd_for_tool(tool_name, args, cwd).strip()
     if not cmd:
@@ -1599,6 +1780,7 @@ def build_tool_call_events(
     timestamp_ms: int,
     cwd: Path,
 ) -> tuple[list[dict[str, Any]], str]:
+    tool_name = (entry.tool_name or "").casefold()
     patch, _ = patch_for_tool(entry.tool_name, entry.args)
     if patch:
         payload: dict[str, Any] = {
@@ -1612,7 +1794,69 @@ def build_tool_call_events(
         payload.update(turn_metadata(turn_id))
         return ([{"timestamp": utc_iso(timestamp_ms), "type": "response_item", "payload": payload}], "custom")
 
-    plan_args = update_plan_arguments(entry.args) if (entry.tool_name or "").casefold() == "todowrite" else None
+    action = web_search_action(entry.args) if tool_name == "websearch" else None
+    if action is not None:
+        query = action.get("query") or action.get("url") or ""
+        event_payload = {
+            "type": "web_search_end",
+            "call_id": call_id,
+            "query": query,
+            "action": action,
+        }
+        payload = {
+            "type": "web_search_call",
+            "status": "completed",
+            "action": action,
+        }
+        payload.update(turn_metadata(turn_id))
+        return (
+            [
+                {"timestamp": utc_iso(timestamp_ms), "type": "event_msg", "payload": event_payload},
+                {"timestamp": utc_iso(timestamp_ms), "type": "response_item", "payload": payload},
+            ],
+            "web_search",
+        )
+
+    if tool_name == "semanticsearch":
+        args = semantic_search_arguments(entry.args)
+        if args is not None:
+            payload = {
+                "type": "function_call",
+                "id": item_id("fc"),
+                "name": "semantic_search",
+                "arguments": json.dumps(args, ensure_ascii=False, separators=(",", ":")),
+                "call_id": call_id,
+            }
+            payload.update(turn_metadata(turn_id))
+            return ([{"timestamp": utc_iso(timestamp_ms), "type": "response_item", "payload": payload}], "function")
+
+    if tool_name == "readlints":
+        args = read_lints_arguments(entry.args)
+        if args is not None:
+            payload = {
+                "type": "function_call",
+                "id": item_id("fc"),
+                "name": "mcp__omx_code_intel__lsp_diagnostics",
+                "arguments": json.dumps(args, ensure_ascii=False, separators=(",", ":")),
+                "call_id": call_id,
+            }
+            payload.update(turn_metadata(turn_id))
+            return ([{"timestamp": utc_iso(timestamp_ms), "type": "response_item", "payload": payload}], "function")
+
+    if tool_name == "await":
+        args = wait_arguments(entry.args)
+        if args is not None:
+            payload = {
+                "type": "function_call",
+                "id": item_id("fc"),
+                "name": "wait",
+                "arguments": json.dumps(args, ensure_ascii=False, separators=(",", ":")),
+                "call_id": call_id,
+            }
+            payload.update(turn_metadata(turn_id))
+            return ([{"timestamp": utc_iso(timestamp_ms), "type": "response_item", "payload": payload}], "function")
+
+    plan_args = update_plan_arguments(entry.args) if tool_name == "todowrite" else None
     if plan_args is not None:
         payload = {
             "type": "function_call",
@@ -1657,8 +1901,20 @@ def build_tool_result_events(
     if call_kind == "custom":
         _, changes = patch_for_tool(pending_tool_name, pending_args)
         success = patch_result_success(result_text)
+        if not success:
+            return [
+                {
+                    "timestamp": utc_iso(timestamp_ms),
+                    "type": "response_item",
+                    "payload": {
+                        "type": "custom_tool_call_output",
+                        "call_id": call_id,
+                        "output": result_text,
+                        **turn_metadata(turn_id),
+                    },
+                }
+            ]
         stdout = patch_tool_stdout(changes, cwd) if success else ""
-        stderr = "" if success else extract_output_body(result_text) or result_text
         return [
             {
                 "timestamp": utc_iso(timestamp_ms),
@@ -1668,10 +1924,10 @@ def build_tool_result_events(
                     "call_id": call_id,
                     "turn_id": turn_id,
                     "stdout": stdout,
-                    "stderr": stderr,
-                    "success": success,
+                    "stderr": "",
+                    "success": True,
                     "changes": changes or {},
-                    "status": "completed" if success else "failed",
+                    "status": "completed",
                 },
             },
             {
@@ -1680,15 +1936,13 @@ def build_tool_result_events(
                 "payload": {
                     "type": "custom_tool_call_output",
                     "call_id": call_id,
-                    "output": (
-                        "Exit code: 0\nWall time: 0.4 seconds\nOutput:\n" + stdout
-                        if success
-                        else result_text
-                    ),
+                    "output": "Exit code: 0\nWall time: 0.4 seconds\nOutput:\n" + stdout,
                     **turn_metadata(turn_id),
                 },
             },
         ]
+    if call_kind == "web_search":
+        return []
     if call_kind == "plan":
         result_text = "Plan updated"
     elif call_kind == "function":
@@ -1943,14 +2197,31 @@ def build_events(
             call_id, call_kind, pending_tool_name, pending_args = mapped
             if call_kind == "custom":
                 _, changes = patch_for_tool(pending_tool_name, pending_args)
-                replay_message = patch_replay_message(changes, cwd)
-            else:
-                replay_message = command_replay_message(
-                    pending_tool_name or entry.tool_name,
-                    pending_args if pending_args is not None else entry.args,
-                    str(entry.result or ""),
-                    cwd,
+                result_text = str(entry.result or "")
+                replay_message = (
+                    patch_replay_message(changes, cwd)
+                    if patch_result_success(result_text)
+                    else patch_failure_replay_message(result_text)
                 )
+            elif call_kind == "web_search":
+                replay_message = web_search_replay_message(pending_args if pending_args is not None else entry.args)
+            else:
+                replay_args = pending_args if pending_args is not None else entry.args
+                pending_name = (pending_tool_name or entry.tool_name or "").casefold()
+                result_text = str(entry.result or "")
+                if pending_name == "await":
+                    replay_message = wait_replay_message(replay_args, result_text)
+                elif pending_name == "readlints":
+                    replay_message = diagnostic_replay_message(replay_args, result_text)
+                elif pending_name == "semanticsearch":
+                    replay_message = semantic_search_replay_message(replay_args, result_text)
+                else:
+                    replay_message = command_replay_message(
+                        pending_tool_name or entry.tool_name,
+                        replay_args,
+                        result_text,
+                        cwd,
+                    )
             if tool_replay_mode == "compact" and replay_message:
                 events.append(
                     {

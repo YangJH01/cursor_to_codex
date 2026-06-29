@@ -59,6 +59,19 @@ the leading lines of multiline shell commands, include a short `└` output
 preview, and patch tools should show
 `Edited <path> (+N -M)` with a clipped diff snippet.
 
+Prefer Codex-native tool shapes when there is a close stock equivalent:
+`WebSearch` becomes `web_search_call`, `TodoWrite` becomes `update_plan`,
+`ReadLints` becomes `mcp__omx_code_intel__lsp_diagnostics`, `Await` becomes
+`wait`, and `SemanticSearch` becomes a structured `semantic_search`
+function call. Keep Cursor `Read`, `Grep`, `Glob`, and `WebFetch` as
+`exec_command`-style context with the original output body preserved, including
+Cursor line numbers or match prefixes. Only remove transport wrappers such as
+`Exit code:` and `Output:` from compact visible previews.
+
+If a Cursor patch/edit tool failed, preserve the failure output as the tool
+result, but do not emit a successful `patch_apply_end` event and do not show an
+`Edited ...` replay message for a change that was not actually applied.
+
 Stock Codex CLI 0.142.3 does not expose a stable no-rerun API for injecting
 native `Ran`/`Edited` TUI widgets into closed-session resume replay. Existing
 stock APIs are still useful but have different boundaries: `thread/inject_items`
