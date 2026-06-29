@@ -56,6 +56,31 @@ EXEC_TOOL_NAMES = {"shell", "read", "grep", "glob", "webfetch"}
 PATCH_TOOL_NAMES = {"write", "strreplace", "edit", "delete"}
 REPLAY_MODES = {"split", "compact", "full"}
 TOOL_REPLAY_MODES = {"compact", "none"}
+PATCH_FAILURE_MARKERS = (
+    "old_string not found",
+    "could not find",
+    "couldn't find",
+    "not found",
+    "no match",
+    "did not apply",
+    "not applied",
+    "failed",
+    "failure",
+    "error",
+    "unable to",
+)
+PATCH_SUCCESS_MARKERS = (
+    "ok",
+    "done",
+    "success",
+    "succeeded",
+    "successfully",
+    "applied",
+    "updated",
+    "created",
+    "deleted",
+    "written",
+)
 
 
 @dataclass
@@ -1658,13 +1683,20 @@ def extract_output_body(result_text: str) -> str:
     return "\n".join(lines) + ("\n" if lines else "")
 
 
-def parse_exit_code(result_text: str, default: int = 0) -> int:
+def explicit_exit_code(result_text: str) -> int | None:
     match = re.search(r"(?:Exit code:|Process exited with code)\s*(-?\d+)", result_text)
     if match:
         try:
             return int(match.group(1))
         except ValueError:
-            return default
+            return None
+    return None
+
+
+def parse_exit_code(result_text: str, default: int = 0) -> int:
+    code = explicit_exit_code(result_text)
+    if code is not None:
+        return code
     lowered = result_text.casefold()
     if "failed" in lowered or "error" in lowered:
         return 1
@@ -1700,7 +1732,14 @@ def codex_exec_output(result_text: str, call_id: str) -> str:
 
 
 def patch_result_success(result_text: str) -> bool:
-    return parse_exit_code(result_text, default=0) == 0
+    lowered = result_text.casefold()
+    if any(marker in lowered for marker in PATCH_FAILURE_MARKERS):
+        return False
+    code = explicit_exit_code(result_text)
+    if code is not None:
+        return code == 0
+    stripped = lowered.strip()
+    return bool(stripped) and any(marker in stripped for marker in PATCH_SUCCESS_MARKERS)
 
 
 def diff_stats_and_preview(change: dict[str, Any]) -> tuple[int, int, list[str], int]:

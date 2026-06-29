@@ -546,7 +546,7 @@ class FormatterTests(unittest.TestCase):
                 self.importer.ExportEntry(
                     kind="tool_result",
                     tool_call_id="edit-1",
-                    result="Exit code: 1\nOutput:\nold_string not found\n",
+                    result="old_string not found\n",
                 ),
             ],
             "test",
@@ -578,6 +578,13 @@ class FormatterTests(unittest.TestCase):
         self.assertTrue(any(message.startswith("Patch failed") for message in agent_messages))
         self.assertFalse(any(message.startswith("Edited `lib.py`") for message in agent_messages))
         self.assertTrue(any("old_string not found" in output for output in outputs))
+
+    def test_patch_result_success_requires_success_signal(self) -> None:
+        self.assertTrue(self.importer.patch_result_success("ok"))
+        self.assertTrue(self.importer.patch_result_success("Exit code: 0\nOutput:\n"))
+        self.assertFalse(self.importer.patch_result_success("old_string not found\n"))
+        self.assertFalse(self.importer.patch_result_success("could not find old text\n"))
+        self.assertFalse(self.importer.patch_result_success(""))
 
     def test_current_project_selection_prefers_exact_cwd_over_newer_parent(self) -> None:
         child_key = self.importer.cursor_project_key_for_path(Path("/tmp/c2c-selection/child"))
