@@ -212,6 +212,69 @@ class FormatterTests(unittest.TestCase):
         self.assertIn("function_call", response_types)
         self.assertIn("function_call_output", response_types)
 
+    def test_build_events_omits_cursor_reasoning_encrypted_content(self) -> None:
+        events = self.importer.build_events(
+            "11111111-1111-1111-1111-111111111111",
+            [
+                self.importer.ExportEntry(kind="user", text="do it"),
+                self.importer.ExportEntry(kind="reasoning", text="not-a-valid-openai-encrypted-blob"),
+                self.importer.ExportEntry(kind="assistant", text="done"),
+            ],
+            "test",
+            Path("/home/yjh/bypass"),
+            1_700_000_000_000,
+            self.importer.ThreadDefaults(cli_version="0.142.3"),
+        )
+        payloads = [
+            event["payload"]
+            for event in events
+            if event.get("type") == "response_item"
+        ]
+
+        self.assertFalse(any(payload.get("type") == "reasoning" for payload in payloads))
+        self.assertFalse(any("encrypted_content" in payload for payload in payloads))
+        self.assertTrue(
+            any(
+                payload.get("type") == "message"
+                and payload.get("role") == "assistant"
+                and payload.get("content", [{}])[0].get("text") == "done"
+                for payload in payloads
+            )
+        )
+
+    def test_rollout_with_imported_reasoning_encrypted_content_needs_rewrite(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="c2c-reasoning-rewrite-") as tmp:
+            path = Path(tmp) / "rollout.jsonl"
+            path.write_text(
+                "\n".join(
+                    [
+                        self.importer.json.dumps(
+                            {
+                                "type": "session_meta",
+                                "payload": {
+                                    "cursor_to_codex_resume_version": self.importer.EXPORT_SCHEMA_VERSION,
+                                    "cursor_to_codex_resume_replay": "split",
+                                    "cursor_to_codex_resume_tool_replay": self.importer.DEFAULT_TOOL_REPLAY_MODE,
+                                },
+                            }
+                        ),
+                        self.importer.json.dumps(
+                            {
+                                "type": "response_item",
+                                "payload": {
+                                    "type": "reasoning",
+                                    "encrypted_content": "not-a-valid-openai-encrypted-blob",
+                                },
+                            }
+                        ),
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            self.assertTrue(self.importer.rollout_needs_rewrite(path))
+
     def test_cursor_todowrite_maps_to_codex_update_plan(self) -> None:
         events = self.importer.build_events(
             "11111111-1111-1111-1111-111111111111",

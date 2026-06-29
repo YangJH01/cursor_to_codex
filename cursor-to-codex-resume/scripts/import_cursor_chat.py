@@ -41,7 +41,7 @@ HANDOFF_COMMAND_NAMES = (
     "/cursor-to-codex-resume",
     "$cursor-to-codex-resume",
 )
-EXPORT_SCHEMA_VERSION = 23
+EXPORT_SCHEMA_VERSION = 24
 DEFAULT_MODEL_CONTEXT_WINDOW = 258400
 DEFAULT_REPLAY_MAX_CHARS = 900
 DEFAULT_REPLAY_MAX_LINES = 8
@@ -1101,9 +1101,7 @@ def extract_entries_from_store(store_db: Path, include_tools: bool) -> tuple[lis
                 for part in parts:
                     part_type = part.get("type")
                     if part_type in {"redacted-reasoning", "reasoning"}:
-                        data = part.get("data") or part.get("text")
-                        if isinstance(data, str) and data.strip():
-                            entries.append(ExportEntry(kind="reasoning", text=data.strip()))
+                        continue
                     elif part_type == "text" and isinstance(part.get("text"), str):
                         text = normalize_export_text("assistant", part["text"])
                         if text:
@@ -1199,6 +1197,8 @@ def rollout_needs_rewrite(
                     if payload.get("cursor_to_codex_resume_tool_replay", DEFAULT_TOOL_REPLAY_MODE) != expected_tool_replay:
                         return True
                 if payload.get("metadata") is not None:
+                    return True
+                if payload.get("type") == "reasoning" and payload.get("encrypted_content"):
                     return True
                 if item.get("type") == "event_msg" and payload.get("type") in {"user_message", "agent_message"}:
                     message = payload.get("message")
@@ -2275,19 +2275,9 @@ def build_events(
             )
 
         if entry.kind == "reasoning":
-            events.append(
-                {
-                    "timestamp": utc_iso(next_ms()),
-                    "type": "response_item",
-                    "payload": {
-                        "type": "reasoning",
-                        "id": item_id("rs"),
-                        "summary": [],
-                        "encrypted_content": entry.text,
-                        **turn_metadata(turn_id),
-                    },
-                }
-            )
+            # Cursor reasoning/redacted-reasoning is not an OpenAI encrypted
+            # reasoning blob. Replaying it as encrypted_content causes
+            # invalid_encrypted_content on the next Codex API request.
             continue
 
         if entry.kind == "assistant":

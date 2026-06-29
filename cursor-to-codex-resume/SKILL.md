@@ -64,6 +64,11 @@ by default so the text remains visible without triggering a Codex resume
 initial-paint duplication bug. Fenced code blocks, including Mermaid source
 blocks, should stay intact.
 
+Do not export Cursor `reasoning` or `redacted-reasoning` parts as Codex
+`reasoning.encrypted_content`. Codex can only resume encrypted reasoning blobs
+that came from OpenAI for that session; Cursor reasoning text or redacted blobs
+will fail later with `invalid_encrypted_content`. Omit those parts instead.
+
 Tool calls must be written as stock Codex-compatible `response_item` tool rows with
 `internal_chat_message_metadata_passthrough` so the model context keeps the
 complete tool history. By default, do not add visible tool replay messages; this
