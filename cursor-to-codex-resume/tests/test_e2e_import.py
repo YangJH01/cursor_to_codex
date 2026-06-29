@@ -248,6 +248,85 @@ class EndToEndImportTests(unittest.TestCase):
             self.assertFalse((codex_home / "sessions").exists())
             self.assertFalse((codex_home / "session_index.jsonl").exists())
 
+    def test_tool_only_transcript_refuses_without_writing_session(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="c2c-tool-only-e2e-") as tmp:
+            root = Path(tmp)
+            cursor_home = root / "cursor"
+            codex_home = root / "codex"
+            cwd = root / "repo"
+            chat_id = "bbbbbbbb-1111-2222-3333-cccccccccccc"
+            transcript = (
+                cursor_home
+                / "projects"
+                / "tmp-c2c-tool-only-repo"
+                / "agent-transcripts"
+                / chat_id
+                / f"{chat_id}.jsonl"
+            )
+            cwd.mkdir(parents=True)
+            transcript.parent.mkdir(parents=True)
+            transcript.write_text(
+                "\n".join(
+                    [
+                        json.dumps(
+                            {
+                                "role": "assistant",
+                                "message": {
+                                    "content": [
+                                        {
+                                            "type": "tool_use",
+                                            "id": "shell-1",
+                                            "name": "Shell",
+                                            "input": {"command": "pwd"},
+                                        }
+                                    ]
+                                },
+                            }
+                        ),
+                        json.dumps(
+                            {
+                                "role": "tool",
+                                "id": "shell-1",
+                                "message": {
+                                    "content": [
+                                        {
+                                            "type": "tool_result",
+                                            "id": "shell-1",
+                                            "result": "Exit code: 0\nOutput:\n/tmp/repo\n",
+                                        }
+                                    ]
+                                },
+                            }
+                        ),
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    str(IMPORTER),
+                    "--cursor-home",
+                    str(cursor_home),
+                    "--codex-home",
+                    str(codex_home),
+                    "--chat",
+                    chat_id,
+                    "--cwd",
+                    str(cwd),
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertNotEqual(proc.returncode, 0)
+            self.assertIn("No user/assistant messages remained", proc.stderr)
+            self.assertFalse((codex_home / "sessions").exists())
+            self.assertFalse((codex_home / "session_index.jsonl").exists())
+
     def test_reimport_after_transcript_mtime_changes_writes_current_rollout(self) -> None:
         with tempfile.TemporaryDirectory(prefix="c2c-repeat-e2e-") as tmp:
             root = Path(tmp)

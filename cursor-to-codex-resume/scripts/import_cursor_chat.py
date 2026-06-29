@@ -2497,7 +2497,8 @@ def import_candidate(args: argparse.Namespace) -> dict[str, Any]:
         current_cwd,
     )
     entries = extract_entries(candidate, args.include_tools)
-    if not entries:
+    visible_messages = sum(1 for entry in entries if entry.kind in {"user", "assistant"} and entry.text)
+    if not entries or visible_messages == 0:
         raise SystemExit(
             "INFO: The selected Cursor session has no conversation to export after removing the handoff command. "
             "No user/assistant messages remained in the selected session. "
@@ -2539,7 +2540,7 @@ def import_candidate(args: argparse.Namespace) -> dict[str, Any]:
         "title": title,
         "session_id": session_id,
         "entries": len(entries),
-        "visible_messages": sum(1 for entry in entries if entry.kind in {"user", "assistant"}),
+        "visible_messages": visible_messages,
         "tool_calls": sum(1 for entry in entries if entry.kind == "tool_call"),
         "tool_results": sum(1 for entry in entries if entry.kind == "tool_result"),
         "cwd": str(cwd),
