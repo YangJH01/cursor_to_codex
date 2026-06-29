@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import importlib.util
+import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -258,6 +260,72 @@ class FormatterTests(unittest.TestCase):
         self.assertIn("*** Delete File: /home/yjh/bypass/old.txt", call["input"])
         self.assertTrue(patch_end["success"])
         self.assertEqual(patch_end["changes"]["/home/yjh/bypass/old.txt"]["type"], "delete")
+
+    def test_cursor_write_to_git_tracked_file_maps_to_update_patch(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="c2c-write-git-") as tmp:
+            repo = Path(tmp)
+            target = repo / "app.py"
+            target.write_text("old = True\n", encoding="utf-8")
+            subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True, text=True)
+            subprocess.run(["git", "add", "app.py"], cwd=repo, check=True, capture_output=True, text=True)
+            subprocess.run(
+                [
+                    "git",
+                    "-c",
+                    "user.name=Cursor To Codex Test",
+                    "-c",
+                    "user.email=test@example.invalid",
+                    "commit",
+                    "-m",
+                    "seed app",
+                ],
+                cwd=repo,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            events = self.importer.build_events(
+                "11111111-1111-1111-1111-111111111111",
+                [
+                    self.importer.ExportEntry(kind="user", text="rewrite it"),
+                    self.importer.ExportEntry(
+                        kind="tool_call",
+                        tool_name="Write",
+                        tool_call_id="write-1",
+                        args={"path": str(target), "contents": "new = True\n"},
+                    ),
+                    self.importer.ExportEntry(kind="tool_result", tool_call_id="write-1", result="ok"),
+                ],
+                "test",
+                repo,
+                1_700_000_000_000,
+                self.importer.ThreadDefaults(cli_version="0.142.3"),
+            )
+
+            call = next(
+                event["payload"]
+                for event in events
+                if event.get("type") == "response_item"
+                and event.get("payload", {}).get("type") == "custom_tool_call"
+            )
+            patch_end = next(
+                event["payload"]
+                for event in events
+                if event.get("type") == "event_msg"
+                and event.get("payload", {}).get("type") == "patch_apply_end"
+            )
+            agent_messages = [
+                event["payload"]["message"]
+                for event in events
+                if event.get("type") == "event_msg"
+                and event.get("payload", {}).get("type") == "agent_message"
+            ]
+
+            self.assertIn(f"*** Update File: {target}", call["input"])
+            self.assertNotIn(f"*** Add File: {target}", call["input"])
+            self.assertEqual(patch_end["changes"][str(target)]["type"], "update")
+            self.assertTrue(any("Edited `app.py` (+1 -1)" in message for message in agent_messages))
 
     def test_cursor_websearch_maps_to_native_web_search_call(self) -> None:
         events = self.importer.build_events(

@@ -1446,7 +1446,61 @@ def patch_lines_from_text(prefix: str, text: str) -> list[str]:
     return [prefix + line for line in trailing]
 
 
-def patch_for_tool(tool_name: str | None, args: Any) -> tuple[str | None, dict[str, Any] | None]:
+def git_head_file_content(path: str, cwd: Path | None) -> str | None:
+    if cwd is None:
+        return None
+    try:
+        repo_proc = subprocess.run(
+            ["git", "-C", str(cwd), "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+    except Exception:
+        return None
+    if repo_proc.returncode != 0:
+        return None
+    repo_root = Path(repo_proc.stdout.strip())
+    try:
+        absolute = Path(path)
+        if not absolute.is_absolute():
+            absolute = cwd / absolute
+        rel_path = absolute.resolve().relative_to(repo_root.resolve()).as_posix()
+    except Exception:
+        return None
+    try:
+        show_proc = subprocess.run(
+            ["git", "-C", str(repo_root), "show", f"HEAD:{rel_path}"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+    except Exception:
+        return None
+    if show_proc.returncode != 0:
+        return None
+    return show_proc.stdout
+
+
+def full_update_patch(path: str, old: str, new: str) -> tuple[str, dict[str, Any]]:
+    lines = ["*** Begin Patch", f"*** Update File: {path}", "@@"]
+    lines.extend(patch_lines_from_text("-", old))
+    lines.extend(patch_lines_from_text("+", new))
+    lines.append("*** End Patch")
+    diff = "".join(
+        difflib.unified_diff(
+            old.splitlines(keepends=True),
+            new.splitlines(keepends=True),
+            fromfile=path,
+            tofile=path,
+        )
+    )
+    return "\n".join(lines) + "\n", {path: {"type": "update", "unified_diff": diff, "move_path": None}}
+
+
+def patch_for_tool(tool_name: str | None, args: Any, cwd: Path | None = None) -> tuple[str | None, dict[str, Any] | None]:
     if not isinstance(args, dict):
         return None, None
     name = (tool_name or "").casefold()
@@ -1458,6 +1512,9 @@ def patch_for_tool(tool_name: str | None, args: Any) -> tuple[str | None, dict[s
         return "\n".join(lines) + "\n", {path: {"type": "delete", "content": ""}}
     if name == "write" and isinstance(args.get("contents"), str):
         contents = args["contents"]
+        old_contents = git_head_file_content(path, cwd)
+        if old_contents is not None:
+            return full_update_patch(path, old_contents, contents)
         lines = ["*** Begin Patch", f"*** Add File: {path}"]
         lines.extend(patch_lines_from_text("+", contents))
         lines.append("*** End Patch")
@@ -1466,19 +1523,7 @@ def patch_for_tool(tool_name: str | None, args: Any) -> tuple[str | None, dict[s
         old = args.get("old_string") or args.get("oldString")
         new = args.get("new_string") or args.get("newString")
         if isinstance(old, str) and isinstance(new, str):
-            lines = ["*** Begin Patch", f"*** Update File: {path}", "@@"]
-            lines.extend(patch_lines_from_text("-", old))
-            lines.extend(patch_lines_from_text("+", new))
-            lines.append("*** End Patch")
-            diff = "".join(
-                difflib.unified_diff(
-                    old.splitlines(keepends=True),
-                    new.splitlines(keepends=True),
-                    fromfile=path,
-                    tofile=path,
-                )
-            )
-            return "\n".join(lines) + "\n", {path: {"type": "update", "unified_diff": diff, "move_path": None}}
+            return full_update_patch(path, old, new)
     return None, None
 
 
@@ -1806,7 +1851,7 @@ def build_tool_call_events(
     cwd: Path,
 ) -> tuple[list[dict[str, Any]], str]:
     tool_name = (entry.tool_name or "").casefold()
-    patch, _ = patch_for_tool(entry.tool_name, entry.args)
+    patch, _ = patch_for_tool(entry.tool_name, entry.args, cwd)
     if patch:
         payload: dict[str, Any] = {
             "type": "custom_tool_call",
@@ -1924,7 +1969,7 @@ def build_tool_result_events(
 ) -> list[dict[str, Any]]:
     result_text = str(entry.result or "")
     if call_kind == "custom":
-        _, changes = patch_for_tool(pending_tool_name, pending_args)
+        _, changes = patch_for_tool(pending_tool_name, pending_args, cwd)
         success = patch_result_success(result_text)
         if not success:
             return [
@@ -2237,7 +2282,7 @@ def build_events(
                 )
             call_id, call_kind, pending_tool_name, pending_args = mapped
             if call_kind == "custom":
-                _, changes = patch_for_tool(pending_tool_name, pending_args)
+                _, changes = patch_for_tool(pending_tool_name, pending_args, cwd)
                 result_text = str(entry.result or "")
                 replay_message = (
                     patch_replay_message(changes, cwd)
