@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ -n "${CURSOR_TO_CODEX_RESUME_SCRIPT:-}" ]]; then
+  script="${CURSOR_TO_CODEX_RESUME_SCRIPT}"
+elif [[ -f "${HOME}/.cursor/skills/cursor-to-codex-resume/scripts/import_cursor_chat.py" ]]; then
+  script="${HOME}/.cursor/skills/cursor-to-codex-resume/scripts/import_cursor_chat.py"
+else
+  root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+  script="${root}/scripts/import_cursor_chat.py"
+fi
+
+exec python3 "${script}" "$@"
