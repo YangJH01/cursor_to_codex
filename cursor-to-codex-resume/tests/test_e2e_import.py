@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 import subprocess
 import sys
@@ -246,6 +247,79 @@ class EndToEndImportTests(unittest.TestCase):
             self.assertIn("INFO: The selected Cursor session has no conversation", proc.stderr)
             self.assertFalse((codex_home / "sessions").exists())
             self.assertFalse((codex_home / "session_index.jsonl").exists())
+
+    def test_reimport_after_transcript_mtime_changes_writes_current_rollout(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="c2c-repeat-e2e-") as tmp:
+            root = Path(tmp)
+            cursor_home = root / "cursor"
+            codex_home = root / "codex"
+            cwd = root / "repo"
+            chat_id = "99999999-8888-7777-6666-555555555555"
+            transcript = (
+                cursor_home
+                / "projects"
+                / "tmp-c2c-repeat-repo"
+                / "agent-transcripts"
+                / chat_id
+                / f"{chat_id}.jsonl"
+            )
+            cwd.mkdir(parents=True)
+            transcript.parent.mkdir(parents=True)
+            state_db = create_codex_state_db(codex_home)
+
+            def write_transcript(text: str, mtime: int) -> None:
+                transcript.write_text(
+                    json.dumps({"role": "user", "message": {"content": text}}, ensure_ascii=False) + "\n",
+                    encoding="utf-8",
+                )
+                os.utime(transcript, (mtime, mtime))
+
+            def run_import() -> dict:
+                proc = subprocess.run(
+                    [
+                        sys.executable,
+                        str(IMPORTER),
+                        "--cursor-home",
+                        str(cursor_home),
+                        "--codex-home",
+                        str(codex_home),
+                        "--chat",
+                        chat_id,
+                        "--cwd",
+                        str(cwd),
+                    ],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+                self.assertEqual(proc.returncode, 0, proc.stderr)
+                return parse_summary(proc.stdout)
+
+            write_transcript("first message", 1_700_000_000)
+            first = run_import()
+            write_transcript("second updated message", 1_700_003_600)
+            second = run_import()
+
+            self.assertEqual(first["status"], "imported")
+            self.assertEqual(second["status"], "imported")
+            self.assertEqual(first["session_id"], second["session_id"])
+            self.assertNotEqual(first["rollout_path"], second["rollout_path"])
+            self.assertTrue(Path(first["rollout_path"]).exists())
+            self.assertTrue(Path(second["rollout_path"]).exists())
+            self.assertIn(
+                "second updated message",
+                Path(second["rollout_path"]).read_text(encoding="utf-8"),
+            )
+
+            con = sqlite3.connect(f"file:{state_db}?mode=ro", uri=True)
+            row = con.execute(
+                "select rollout_path from threads where id = ?",
+                (second["session_id"],),
+            ).fetchone()
+            con.close()
+            self.assertIsNotNone(row)
+            assert row is not None
+            self.assertEqual(row[0], second["rollout_path"])
 
     def test_transcript_fallback_writes_model_visible_tool_history(self) -> None:
         with tempfile.TemporaryDirectory(prefix="c2c-tools-e2e-") as tmp:

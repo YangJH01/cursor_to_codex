@@ -2278,6 +2278,20 @@ def thread_exists(state_db: Path | None, session_id: str) -> bool:
         return False
 
 
+def thread_rollout_path(state_db: Path | None, session_id: str) -> str | None:
+    if not state_db or not state_db.exists():
+        return None
+    try:
+        con = sqlite3.connect(f"file:{state_db}?mode=ro", uri=True)
+        row = con.execute("select rollout_path from threads where id = ?", (session_id,)).fetchone()
+        con.close()
+    except sqlite3.Error:
+        return None
+    if row and isinstance(row[0], str) and row[0]:
+        return row[0]
+    return None
+
+
 def detect_codex_cli_version() -> str:
     try:
         proc = subprocess.run(
@@ -2504,11 +2518,17 @@ def import_candidate(args: argparse.Namespace) -> dict[str, Any]:
         return summary
 
     needs_repair = rollout_needs_rewrite(rollout_path)
+    existing_thread_rollout = thread_rollout_path(state_db, session_id)
+    already_current = rollout_path.exists() and (
+        not state_db
+        or not state_db.exists()
+        or existing_thread_rollout == str(rollout_path)
+    )
     if (
         not args.force
         and not args.new
         and not needs_repair
-        and (rollout_path.exists() or thread_exists(state_db, session_id))
+        and already_current
     ):
         summary["status"] = "already-imported"
         return summary
