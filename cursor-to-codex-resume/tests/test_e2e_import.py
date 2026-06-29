@@ -464,6 +464,22 @@ class EndToEndImportTests(unittest.TestCase):
                             },
                             ensure_ascii=False,
                         ),
+                        json.dumps(
+                            {
+                                "role": "tool",
+                                "id": "web-1",
+                                "message": {
+                                    "content": [
+                                        {
+                                            "type": "tool_result",
+                                            "id": "web-1",
+                                            "result": "Result title\nhttps://example.com\nSnippet important for follow-up\n",
+                                        }
+                                    ]
+                                },
+                            },
+                            ensure_ascii=False,
+                        ),
                     ]
                 )
                 + "\n",
@@ -522,6 +538,12 @@ class EndToEndImportTests(unittest.TestCase):
                 if event.get("type") == "event_msg"
                 and event.get("payload", {}).get("type") == "agent_message"
             ]
+            response_messages = [
+                payload
+                for payload in response_payloads
+                if payload.get("type") == "message"
+                and payload.get("role") == "assistant"
+            ]
 
             self.assertIn("function_call", response_kinds)
             self.assertIn("function_call_output", response_kinds)
@@ -536,6 +558,14 @@ class EndToEndImportTests(unittest.TestCase):
             self.assertTrue(any("app.py:41:def main():" in output for output in function_outputs))
             self.assertTrue(any("  └   41 | def main():" in message for message in replay_messages))
             self.assertTrue(any("  └ app.py:41:def main():" in message for message in replay_messages))
+            self.assertTrue(
+                any(
+                    "[Cursor WebSearch result]" in content.get("text", "")
+                    and "Snippet important for follow-up" in content.get("text", "")
+                    for message in response_messages
+                    for content in message.get("content", [])
+                )
+            )
 
 
 if __name__ == "__main__":

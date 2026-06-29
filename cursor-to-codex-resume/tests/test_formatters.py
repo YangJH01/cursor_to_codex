@@ -295,6 +295,54 @@ class FormatterTests(unittest.TestCase):
         self.assertEqual(web_call["action"]["query"], "Codex CLI resume format")
         self.assertEqual(web_end["query"], "Codex CLI resume format")
 
+    def test_cursor_websearch_result_is_preserved_in_model_context(self) -> None:
+        events = self.importer.build_events(
+            "11111111-1111-1111-1111-111111111111",
+            [
+                self.importer.ExportEntry(kind="user", text="look it up"),
+                self.importer.ExportEntry(
+                    kind="tool_call",
+                    tool_name="WebSearch",
+                    tool_call_id="web-1",
+                    args={"search_term": "Codex CLI resume format"},
+                ),
+                self.importer.ExportEntry(
+                    kind="tool_result",
+                    tool_call_id="web-1",
+                    result="Result title\nhttps://example.com\nSnippet important for follow-up\n",
+                ),
+            ],
+            "test",
+            Path("/home/yjh/bypass"),
+            1_700_000_000_000,
+            self.importer.ThreadDefaults(cli_version="0.142.3"),
+        )
+
+        response_messages = [
+            event["payload"]
+            for event in events
+            if event.get("type") == "response_item"
+            and event.get("payload", {}).get("type") == "message"
+            and event.get("payload", {}).get("role") == "assistant"
+        ]
+        agent_messages = [
+            event["payload"]["message"]
+            for event in events
+            if event.get("type") == "event_msg"
+            and event.get("payload", {}).get("type") == "agent_message"
+        ]
+
+        self.assertTrue(
+            any(
+                "[Cursor WebSearch result]" in content.get("text", "")
+                and "Snippet important for follow-up" in content.get("text", "")
+                for message in response_messages
+                for content in message.get("content", [])
+            )
+        )
+        self.assertTrue(any("  └ Result title" in message for message in agent_messages))
+        self.assertTrue(any("    Snippet important for follow-up" in message for message in agent_messages))
+
     def test_cursor_await_readlints_and_semantic_search_map_to_codex_context(self) -> None:
         events = self.importer.build_events(
             "11111111-1111-1111-1111-111111111111",

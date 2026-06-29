@@ -1704,15 +1704,29 @@ def patch_failure_replay_message(result_text: str) -> str | None:
     return "Patch failed\n" + preview
 
 
-def web_search_replay_message(args: Any) -> str | None:
+def web_search_replay_message(args: Any, result_text: str = "") -> str | None:
     action = web_search_action(args)
     if not action:
         return None
     if action.get("type") == "open_page":
         url = action.get("url")
-        return f"Opened web page `{shorten_one_line(str(url or ''))}`"
-    query = action.get("query")
-    return f"Searched web for `{shorten_one_line(str(query or ''))}`"
+        message = f"Opened web page `{shorten_one_line(str(url or ''))}`"
+    else:
+        query = action.get("query")
+        message = f"Searched web for `{shorten_one_line(str(query or ''))}`"
+    preview = output_preview(result_text)
+    if preview:
+        message += "\n" + preview
+    return message
+
+
+def web_search_result_context_text(result_text: str) -> str:
+    body = extract_output_body(result_text)
+    if not body:
+        body = result_text.strip()
+    if not body:
+        return ""
+    return "[Cursor WebSearch result]\n" + body
 
 
 def wait_replay_message(args: Any, result_text: str) -> str | None:
@@ -1953,7 +1967,23 @@ def build_tool_result_events(
             },
         ]
     if call_kind == "web_search":
-        return []
+        context_text = web_search_result_context_text(result_text)
+        if not context_text:
+            return []
+        return [
+            {
+                "timestamp": utc_iso(timestamp_ms),
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "id": item_id("msg"),
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": context_text}],
+                    "phase": "commentary",
+                    **turn_metadata(turn_id),
+                },
+            }
+        ]
     if call_kind == "plan":
         result_text = "Plan updated"
     elif call_kind == "function":
@@ -2215,7 +2245,10 @@ def build_events(
                     else patch_failure_replay_message(result_text)
                 )
             elif call_kind == "web_search":
-                replay_message = web_search_replay_message(pending_args if pending_args is not None else entry.args)
+                replay_message = web_search_replay_message(
+                    pending_args if pending_args is not None else entry.args,
+                    str(entry.result or ""),
+                )
             else:
                 replay_args = pending_args if pending_args is not None else entry.args
                 pending_name = (pending_tool_name or entry.tool_name or "").casefold()
