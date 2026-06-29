@@ -666,6 +666,23 @@ def paths_overlap(left: Path, right: Path) -> bool:
         return False
 
 
+def workspace_match_rank(cwd: Path, workspace: Path) -> tuple[int, int] | None:
+    cwd_resolved = maybe_resolve(cwd)
+    workspace_resolved = maybe_resolve(workspace)
+    if cwd_resolved == workspace_resolved:
+        return (0, 0)
+    try:
+        relative = cwd_resolved.relative_to(workspace_resolved)
+        return (1, len(relative.parts))
+    except ValueError:
+        pass
+    try:
+        relative = workspace_resolved.relative_to(cwd_resolved)
+        return (2, len(relative.parts))
+    except ValueError:
+        return None
+
+
 def id_matches(candidate: Candidate, value: str) -> bool:
     normalized = value.strip().casefold()
     if not normalized:
@@ -712,10 +729,16 @@ def select_current_candidate(
     path_matches = []
     for candidate in usable:
         workspace = candidate_workspace_path(candidate)
-        if workspace and paths_overlap(cwd, workspace):
-            path_matches.append(candidate)
+        if workspace:
+            rank = workspace_match_rank(cwd, workspace)
+            if rank is not None:
+                path_matches.append((rank, candidate))
     if path_matches:
-        return sorted(path_matches, key=lambda c: c.updated_ms or 0, reverse=True)[0], "current-workspace"
+        selected = sorted(
+            path_matches,
+            key=lambda item: (item[0][0], item[0][1], -(item[1].updated_ms or 0)),
+        )[0][1]
+        return selected, "current-workspace"
 
     raise SystemExit(
         "Could not identify the active Cursor session from the current workspace. "

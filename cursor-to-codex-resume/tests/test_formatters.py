@@ -626,6 +626,32 @@ class FormatterTests(unittest.TestCase):
 
         self.assertEqual(selected.chat_id, "parent")
 
+    def test_current_workspace_selection_prefers_exact_child_over_newer_parent(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="c2c-selection-") as tmp:
+            root = Path(tmp)
+            child = root / "child"
+            child.mkdir()
+            selected, selected_by = self.importer.select_current_candidate(
+                [
+                    self.importer.Candidate(
+                        chat_id="parent",
+                        updated_ms=2_000,
+                        transcript_path=root / "parent.jsonl",
+                        workspace_uri=root.as_uri(),
+                    ),
+                    self.importer.Candidate(
+                        chat_id="child",
+                        updated_ms=1_000,
+                        transcript_path=root / "child.jsonl",
+                        workspace_uri=child.as_uri(),
+                    ),
+                ],
+                child,
+            )
+
+        self.assertEqual(selected.chat_id, "child")
+        self.assertEqual(selected_by, "current-workspace")
+
 
 if __name__ == "__main__":
     unittest.main()
